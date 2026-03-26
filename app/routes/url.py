@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.schemas.url import URLRequest, URLResponse
 from app.database.db import SessionLocal
 from app.models.url import URL
+from app.database.redis import redis_client
 import string
 import random
 
@@ -44,9 +45,23 @@ def create_short_url(request: URLRequest, db: Session = Depends(get_db)):
 
 @router.get("/{short_code}")
 def redirect_to_original_url(short_code: str, db: Session = Depends(get_db)):
+    
+    # 🔥 Step 1: Check Redis cache
+    cached_url = redis_client.get(short_code)
+
+    if cached_url:
+        print("REDIS HIT 🚀")
+        return RedirectResponse(url=cached_url)
+
+    # Step 2: Query DB
     url_entry = db.query(URL).filter(URL.short_code == short_code).first()
 
     if not url_entry:
         raise HTTPException(status_code=404, detail="Short URL not found")
+
+    # 🔥 Step 3: Store in Redis
+    redis_client.set(short_code, url_entry.original_url)
+
+    print("DB HIT ⚠️")
 
     return RedirectResponse(url=url_entry.original_url)
