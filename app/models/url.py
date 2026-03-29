@@ -8,4 +8,5 @@ class URL(Base):
     id = Column(Integer, primary_key=True, index=True)
     short_code = Column(String, unique=True, index=True)
     original_url = Column(String)
-    expiry_time = Column(DateTime, nullable=True) 
+    expiry_time = Column(DateTime, nullable=True)
+    clicks = Column(Integer, default=0)  # 👈 NEW

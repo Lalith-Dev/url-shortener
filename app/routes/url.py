@@ -1,16 +1,18 @@
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
+from datetime import datetime, timedelta, timezone
+import string
+import random
+
 from app.schemas.url import URLRequest, URLResponse
 from app.database.db import SessionLocal
 from app.models.url import URL
 from app.database.redis import redis_client
-from datetime import datetime, timedelta
-import string
-import random
 
 router = APIRouter()
 
+# Dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -18,10 +20,12 @@ def get_db():
     finally:
         db.close()
 
+# Generate short code
 def generate_short_code(length=6):
     characters = string.ascii_letters + string.digits
     return ''.join(random.choice(characters) for _ in range(length))
 
+# Create short URL
 @router.post("/shorten", response_model=URLResponse)
 def create_short_url(request: URLRequest, db: Session = Depends(get_db)):
     short_code = generate_short_code()
@@ -31,7 +35,7 @@ def create_short_url(request: URLRequest, db: Session = Depends(get_db)):
 
     expiry_time = None
     if request.expiry_seconds:
-        expiry_time = datetime.utcnow() + timedelta(seconds=request.expiry_seconds)
+        expiry_time = datetime.now(timezone.utc) + timedelta(seconds=request.expiry_seconds)
 
     new_url = URL(
         short_code=short_code,
@@ -43,6 +47,7 @@ def create_short_url(request: URLRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_url)
 
+    # Store in Redis
     if request.expiry_seconds:
         redis_client.setex(short_code, request.expiry_seconds, request.original_url)
     else:
@@ -53,12 +58,19 @@ def create_short_url(request: URLRequest, db: Session = Depends(get_db)):
         "original_url": request.original_url
     }
 
+# Redirect
 @router.get("/{short_code}")
 def redirect_to_original_url(short_code: str, db: Session = Depends(get_db)):
     cached_url = redis_client.get(short_code)
 
     if cached_url:
-        print("REDIS HIT")
+        print("REDIS HIT 🚀")
+
+        url_entry = db.query(URL).filter(URL.short_code == short_code).first()
+        if url_entry:
+            url_entry.clicks += 1
+            db.commit()
+
         return RedirectResponse(url=cached_url)
 
     url_entry = db.query(URL).filter(URL.short_code == short_code).first()
@@ -66,11 +78,31 @@ def redirect_to_original_url(short_code: str, db: Session = Depends(get_db)):
     if not url_entry:
         raise HTTPException(status_code=404, detail="Short URL not found")
 
-    if url_entry.expiry_time and url_entry.expiry_time < datetime.utcnow():
+    # Expiry check
+    if url_entry.expiry_time and url_entry.expiry_time < datetime.now(timezone.utc):
         raise HTTPException(status_code=404, detail="Short URL expired")
+
+    # Increment clicks
+    url_entry.clicks += 1
+    db.commit()
 
     redis_client.set(short_code, url_entry.original_url)
 
-    print("DB HIT")
+    print("DB HIT ⚠️")
 
     return RedirectResponse(url=url_entry.original_url)
+
+# Analytics
+@router.get("/stats/{short_code}")
+def get_url_stats(short_code: str, db: Session = Depends(get_db)):
+    url_entry = db.query(URL).filter(URL.short_code == short_code).first()
+
+    if not url_entry:
+        raise HTTPException(status_code=404, detail="Short URL not found")
+
+    return {
+        "short_code": short_code,
+        "original_url": url_entry.original_url,
+        "clicks": url_entry.clicks,
+        "expiry_time": url_entry.expiry_time
+    }
